@@ -1,0 +1,526 @@
+/*
+ * GPLv3 License
+ *
+ * Copyright (c) 2022-2026 4ra1n (Jar Analyzer Team)
+ *
+ * This project is distributed under the GPLv3 license.
+ *
+ * https://github.com/jar-analyzer/jar-analyzer/blob/master/LICENSE
+ */
+
+package me.n1ar4.jar.analyzer.gui.util;
+
+import me.n1ar4.games.GameFrame;
+import me.n1ar4.games.flappy.FBMainFrame;
+import me.n1ar4.games.landlord.PokerGameFrame;
+import me.n1ar4.games.racing.RacingGameFrame;
+import me.n1ar4.jar.analyzer.ai.AIChatDialog;
+import me.n1ar4.jar.analyzer.ai.AISettingsDialog;
+import me.n1ar4.jar.analyzer.ai.workflow.AIWorkflowDialog;
+import me.n1ar4.jar.analyzer.config.ConfigEngine;
+import me.n1ar4.jar.analyzer.config.ConfigFile;
+import me.n1ar4.jar.analyzer.gui.*;
+import me.n1ar4.jar.analyzer.gui.diff.JarDiffForm;
+import me.n1ar4.jar.analyzer.gui.tree.TreeFileFilter;
+import me.n1ar4.jar.analyzer.http.HttpResponse;
+import me.n1ar4.jar.analyzer.http.Y4Client;
+import me.n1ar4.jar.analyzer.markdown.MarkdownRenderer;
+import me.n1ar4.jar.analyzer.plugins.jd.JDGUIStarter;
+import me.n1ar4.jar.analyzer.starter.Const;
+import me.n1ar4.log.LogManager;
+import me.n1ar4.log.Logger;
+import me.n1ar4.shell.analyzer.form.ShellForm;
+
+import javax.swing.*;
+import java.awt.*;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+
+public class MenuUtil {
+    private static final Logger logger = LogManager.getLogger();
+    private static final JCheckBoxMenuItem showInnerConfig = new JCheckBoxMenuItem("show inner class");
+    private static final JCheckBoxMenuItem fixClassPathConfig = new JCheckBoxMenuItem("fix class path");
+    private static final JCheckBoxMenuItem sortedByMethodConfig = new JCheckBoxMenuItem("sort results by method name");
+    private static final JCheckBoxMenuItem sortedByClassConfig = new JCheckBoxMenuItem("sort results by class name");
+    private static final JCheckBoxMenuItem logAllSqlConfig = new JCheckBoxMenuItem("save all sql statement");
+    private static final JCheckBoxMenuItem chineseConfig = new JCheckBoxMenuItem("Chinese");
+    private static final JCheckBoxMenuItem englishConfig = new JCheckBoxMenuItem("English");
+    private static final JCheckBoxMenuItem enableFixMethodImplConfig = new JCheckBoxMenuItem(
+            "enable fix methods impl/override");
+    private static final JCheckBoxMenuItem disableFixMethodImplConfig = new JCheckBoxMenuItem(
+            "disable fix methods impl/override");
+
+    private static final JCheckBoxMenuItem themeDarkItem = new JCheckBoxMenuItem("use dark ui");
+    private static final JCheckBoxMenuItem themeOrangeItem = new JCheckBoxMenuItem("use orange ui");
+
+    public static void setLangFlag() {
+        if (GlobalOptions.getLang() == GlobalOptions.CHINESE) {
+            chineseConfig.setState(true);
+        } else if (GlobalOptions.getLang() == GlobalOptions.ENGLISH) {
+            englishConfig.setState(true);
+        }
+    }
+
+    public static void useDark() {
+        themeDarkItem.setState(true);
+        themeOrangeItem.setState(false);
+        JarAnalyzerLaf.setupDark();
+    }
+
+    public static void useOrange() {
+        themeDarkItem.setState(false);
+        themeOrangeItem.setState(true);
+        JarAnalyzerLaf.setupOrange();
+    }
+
+    public static void useDefault() {
+        themeDarkItem.setState(false);
+        themeOrangeItem.setState(false);
+        JarAnalyzerLaf.setupLight(false);
+    }
+
+    static {
+        showInnerConfig.setState(false);
+        fixClassPathConfig.setState(false);
+        sortedByMethodConfig.setState(false);
+        sortedByClassConfig.setState(true);
+        logAllSqlConfig.setSelected(false);
+        enableFixMethodImplConfig.setSelected(true);
+
+        chineseConfig.addActionListener(e -> {
+            chineseConfig.setState(chineseConfig.getState());
+            englishConfig.setState(!chineseConfig.getState());
+            if (chineseConfig.getState()) {
+                logger.info("use chinese language");
+                GlobalOptions.setLang(GlobalOptions.CHINESE);
+                MainForm.refreshLang(true);
+                JOptionPane.showMessageDialog(MainForm.getInstance().getMasterPanel(),
+                        "已切换到中文");
+                ConfigFile cf = MainForm.getConfig();
+                if (cf == null) {
+                    return;
+                }
+                cf.setLang("zh");
+                MainForm.setConfig(cf);
+                ConfigEngine.saveConfig(cf);
+            }
+        });
+
+        englishConfig.addActionListener(e -> {
+            englishConfig.setState(englishConfig.getState());
+            chineseConfig.setState(!englishConfig.getState());
+            if (englishConfig.getState()) {
+                logger.info("use english language");
+                GlobalOptions.setLang(GlobalOptions.ENGLISH);
+                MainForm.refreshLang(true);
+                JOptionPane.showMessageDialog(MainForm.getInstance().getMasterPanel(),
+                        "use english language");
+                ConfigFile cf = MainForm.getConfig();
+                if (cf == null) {
+                    return;
+                }
+                cf.setLang("en");
+                MainForm.setConfig(cf);
+                ConfigEngine.saveConfig(cf);
+            }
+        });
+
+        sortedByMethodConfig.addActionListener(e -> {
+            sortedByMethodConfig.setState(sortedByMethodConfig.getState());
+            sortedByClassConfig.setState(!sortedByMethodConfig.getState());
+        });
+
+        sortedByClassConfig.addActionListener(e -> {
+            sortedByClassConfig.setState(sortedByClassConfig.getState());
+            sortedByMethodConfig.setState(!sortedByClassConfig.getState());
+        });
+
+        enableFixMethodImplConfig.addActionListener(e -> {
+            enableFixMethodImplConfig.setState(enableFixMethodImplConfig.getState());
+            disableFixMethodImplConfig.setState(!enableFixMethodImplConfig.getState());
+        });
+
+        disableFixMethodImplConfig.addActionListener(e -> {
+            disableFixMethodImplConfig.setState(disableFixMethodImplConfig.getState());
+            enableFixMethodImplConfig.setState(!disableFixMethodImplConfig.getState());
+        });
+    }
+
+    public static JCheckBoxMenuItem getShowInnerConfig() {
+        return showInnerConfig;
+    }
+
+    public static JCheckBoxMenuItem getFixClassPathConfig() {
+        return fixClassPathConfig;
+    }
+
+    public static JCheckBoxMenuItem getLogAllSqlConfig() {
+        return logAllSqlConfig;
+    }
+
+    public static boolean sortedByMethod() {
+        return sortedByMethodConfig.getState();
+    }
+
+    public static boolean sortedByClass() {
+        return sortedByClassConfig.getState();
+    }
+
+    public static boolean enableFixMethodImpl() {
+        return enableFixMethodImplConfig.getState();
+    }
+
+    public static boolean disableFixMethodImpl() {
+        return disableFixMethodImplConfig.getState();
+    }
+
+    // ---------- setters used by ConfigHelpDialog (面板内直接设置) ----------
+
+    public static void setShowInner(boolean v) {
+        showInnerConfig.setState(v);
+        // 切换配置后此前的内部类跳转放行不再有意义，清空
+        TreeFileFilter.setExceptedInnerClass(null);
+        // 文件树节点是懒加载缓存的，切换后必须重建整棵树才能立即生效；
+        // 重建时保持展开/选中状态，避免打断用户当前的浏览位置
+        MainForm inst = MainForm.getInstance();
+        if (inst != null && inst.getFileTree() != null) {
+            inst.getFileTree().refreshKeepingExpansion();
+        }
+    }
+
+    public static void setFixClassPath(boolean v) {
+        fixClassPathConfig.setState(v);
+    }
+
+    public static void setLogAllSql(boolean v) {
+        logAllSqlConfig.setState(v);
+    }
+
+    /**
+     * 互斥：true = 按方法名排序；false = 按类名排序
+     */
+    public static void setSortedByMethod(boolean byMethod) {
+        sortedByMethodConfig.setState(byMethod);
+        sortedByClassConfig.setState(!byMethod);
+    }
+
+    /**
+     * 互斥：true = 启用方法实现/重写修复；false = 禁用
+     */
+    public static void setEnableFixMethodImpl(boolean enable) {
+        enableFixMethodImplConfig.setState(enable);
+        disableFixMethodImplConfig.setState(!enable);
+    }
+
+    public static JMenuBar createMenuBar() {
+        JMenuBar menuBar = new JMenuBar();
+        menuBar.add(createAboutMenu());
+        menuBar.add(createConfigMenu());
+        menuBar.add(language());
+        menuBar.add(loadRemote());
+        menuBar.add(createGames());
+        menuBar.add(createTheme());
+        JMenu plugins = new JMenu("plugins");
+        JMenuItem luceneItem = new JMenuItem("global search");
+        luceneItem.setIcon(SvgManager.MenuGlobalSearchIcon);
+        luceneItem.addActionListener(e -> LuceneSearchForm.start(1));
+        plugins.add(luceneItem);
+        JMenuItem jdItem = new JMenuItem("start jd-gui");
+        jdItem.setIcon(SvgManager.TopMenuDecompilerIcon);
+        jdItem.addActionListener(e -> JDGUIStarter.start());
+        plugins.add(jdItem);
+        plugins.addSeparator();
+        JMenuItem exportItem = new JMenuItem("decompile and export");
+        exportItem.setIcon(SvgManager.TopMenuExportIcon);
+        exportItem.addActionListener(e -> ExportForm.start());
+        plugins.add(exportItem);
+        JMenuItem diffJarItem = new JMenuItem("diff jars");
+        diffJarItem.setIcon(SvgManager.TopMenuDiffIcon);
+        diffJarItem.addActionListener(e -> JarDiffForm.start());
+        plugins.add(diffJarItem);
+        plugins.addSeparator();
+        // 合并自原 develop 菜单
+        JMenuItem connectDbItem = new JMenuItem("connect db");
+        connectDbItem.setIcon(SvgManager.TopMenuDatabaseIcon);
+        connectDbItem.addActionListener(e ->
+                me.n1ar4.jar.analyzer.plugins.sqlite.SQLiteForm.start());
+        plugins.add(connectDbItem);
+        menuBar.add(plugins);
+        menuBar.add(createAIMenu());
+        return menuBar;
+    }
+
+    private static JMenu createAIMenu() {
+        JMenu aiMenu = new JMenu("AI");
+
+        JMenuItem chatItem = new JMenuItem("AI 助手对话");
+        chatItem.setIcon(SvgManager.AiChatIcon);
+        chatItem.addActionListener(e -> AIChatDialog.open());
+        aiMenu.add(chatItem);
+
+        JMenuItem settingsItem = new JMenuItem("AI 设置 (DeepSeek / 智谱 GLM)");
+        settingsItem.setIcon(SvgManager.AiSettingsIcon);
+        settingsItem.addActionListener(e -> AISettingsDialog.open());
+        aiMenu.add(settingsItem);
+
+        aiMenu.addSeparator();
+        JMenuItem workflowItem = new JMenuItem("AI 漏洞扫描工作流 (DAG)");
+        workflowItem.setIcon(SvgManager.AiIcon);
+        workflowItem.addActionListener(e ->
+                AIWorkflowDialog.open(MainForm.getInstance().getMasterPanel()));
+        aiMenu.add(workflowItem);
+
+        aiMenu.addSeparator();
+        JMenuItem hintItem = new JMenuItem("已支持: DeepSeek / 智谱 GLM / 自定义");
+        hintItem.setEnabled(false);
+        aiMenu.add(hintItem);
+
+        return aiMenu;
+    }
+
+    private static JMenu createTheme() {
+        JMenu theme = new JMenu("theme");
+        themeDarkItem.addActionListener(e -> {
+            ConfigFile cf;
+            if (themeDarkItem.getState()) {
+                themeOrangeItem.setState(false);
+                JarAnalyzerLaf.setupDark();
+                cf = MainForm.getConfig();
+                if (cf == null) {
+                    return;
+                }
+                cf.setTheme("dark");
+            } else {
+                JarAnalyzerLaf.setupLight(false);
+                cf = MainForm.getConfig();
+                if (cf == null) {
+                    return;
+                }
+                cf.setTheme("default");
+            }
+            MainForm.setConfig(cf);
+            ConfigEngine.saveConfig(cf);
+        });
+        themeOrangeItem.addActionListener(e -> {
+            ConfigFile cf;
+            if (themeOrangeItem.getState()) {
+                themeDarkItem.setState(false);
+                JarAnalyzerLaf.setupOrange();
+                cf = MainForm.getConfig();
+                if (cf == null) {
+                    return;
+                }
+                cf.setTheme("orange");
+            } else {
+                JarAnalyzerLaf.setupLight(false);
+                cf = MainForm.getConfig();
+                if (cf == null) {
+                    return;
+                }
+                cf.setTheme("default");
+            }
+            MainForm.setConfig(cf);
+            ConfigEngine.saveConfig(cf);
+        });
+        theme.add(themeDarkItem);
+        theme.add(themeOrangeItem);
+        return theme;
+    }
+
+    private static JMenu loadRemote() {
+        JMenu loadRemote = new JMenu("remote");
+        JMenuItem loadByHttp = new JMenuItem("load jars (http)");
+        loadByHttp.setIcon(SvgManager.TopMenuHttpIcon);
+        loadByHttp.addActionListener(e -> RemoteHttp.start());
+        loadRemote.add(loadByHttp);
+        JMenuItem start = new JMenuItem("start tomcat analyzer");
+        start.setIcon(SvgManager.TopMenuTomcatIcon);
+        start.addActionListener(e -> ShellForm.start0());
+        loadRemote.add(start);
+        JMenuItem proxyItem = new JMenuItem("open proxy config");
+        proxyItem.setIcon(SvgManager.TopMenuProxyIcon);
+        proxyItem.addActionListener(e -> ProxyForm.start());
+        loadRemote.add(proxyItem);
+        return loadRemote;
+    }
+
+    private static JMenu createGames() {
+        try {
+            JMenu gameMenu = new JMenu("games");
+            JMenuItem flappyItem = new JMenuItem("Flappy Bird");
+            flappyItem.setIcon(SvgManager.TopMenuFlappyIcon);
+            flappyItem.addActionListener(e -> GameFrame.launch("flappy", FBMainFrame::new));
+            JMenuItem pokerItem = new JMenuItem("斗地主");
+            pokerItem.setIcon(SvgManager.TopMenuCardsIcon);
+            pokerItem.addActionListener(e -> GameFrame.launch("landlord", PokerGameFrame::new));
+            JMenuItem racingItem = new JMenuItem("极速公路 / Racing");
+            racingItem.setIcon(SvgManager.TopMenuRacingIcon);
+            racingItem.addActionListener(e -> GameFrame.launch("racing", RacingGameFrame::new));
+
+            gameMenu.add(flappyItem);
+            gameMenu.add(pokerItem);
+            gameMenu.add(racingItem);
+            return gameMenu;
+        } catch (Exception ex) {
+            logger.error("error: {}", ex.toString());
+        }
+        return null;
+    }
+
+    private static JMenu language() {
+        try {
+            JMenu configMenu = new JMenu("language");
+            configMenu.add(chineseConfig);
+            configMenu.add(englishConfig);
+            return configMenu;
+        } catch (Exception ex) {
+            logger.error("error: {}", ex.toString());
+        }
+        return null;
+    }
+
+    private static JMenu createConfigMenu() {
+        try {
+            JMenu configMenu = new JMenu("config");
+            // 所有具体配置项（含 partition 分片大小）已统一迁移到 ConfigHelpDialog 面板里管理。
+            JMenuItem helpItem = new JMenuItem("配置说明与设置");
+            helpItem.setIcon(SvgManager.TopMenuSettingsIcon);
+            helpItem.addActionListener(e -> ConfigHelpDialog.start());
+            configMenu.add(helpItem);
+            // 2026/08/20 字体大小（代码区/界面分开）设置入口
+            JMenuItem fontItem = new JMenuItem("字体大小设置");
+            fontItem.setIcon(SvgManager.TopMenuSettingsIcon);
+            fontItem.addActionListener(e -> MainForm.reconfigureFonts());
+            configMenu.add(fontItem);
+            return configMenu;
+        } catch (Exception ex) {
+            logger.error("error: {}", ex.toString());
+        }
+        return null;
+    }
+
+    @SuppressWarnings("all")
+    private static JMenu createAboutMenu() {
+        try {
+            JMenu aboutMenu = new JMenu("help");
+
+            // QUICK START
+            JMenuItem docsItem = new JMenuItem("官方文档 / docs");
+            docsItem.setIcon(SvgManager.TopMenuDocsIcon);
+            docsItem.addActionListener(e -> {
+                try {
+                    Desktop desktop = Desktop.getDesktop();
+                    URI oURL = new URI(Const.docsUrl);
+                    desktop.browse(oURL);
+                } catch (Exception ex) {
+                    logger.error("error: {}", ex.toString());
+                }
+            });
+            aboutMenu.add(docsItem);
+
+            JMenuItem bugItem = new JMenuItem("report bug");
+            bugItem.setIcon(SvgManager.TopMenuIssueIcon);
+            aboutMenu.add(bugItem);
+            bugItem.addActionListener(e -> {
+                try {
+                    Desktop desktop = Desktop.getDesktop();
+                    URI oURL = new URI(Const.newIssueUrl);
+                    desktop.browse(oURL);
+                } catch (Exception ex) {
+                    logger.error("error: {}", ex.toString());
+                }
+            });
+
+            JMenuItem projectItem = new JMenuItem("project");
+            projectItem.setIcon(SvgManager.TopMenuProjectIcon);
+            aboutMenu.add(projectItem);
+            projectItem.addActionListener(e -> {
+                try {
+                    Desktop desktop = Desktop.getDesktop();
+                    URI oURL = new URI(Const.projectUrl);
+                    desktop.browse(oURL);
+                } catch (Exception ex) {
+                    logger.error("error: {}", ex.toString());
+                }
+            });
+            JMenuItem jarItem = new JMenuItem("version: " + Const.version);
+            jarItem.setIcon(SvgManager.TopMenuVersionIcon);
+            aboutMenu.add(jarItem);
+            JMenuItem changelogItem = new JMenuItem("changelogs");
+            changelogItem.setIcon(SvgManager.TopMenuChangelogIcon);
+            changelogItem.addActionListener(e -> {
+                try {
+                    InputStream i = MenuUtil.class.getClassLoader().getResourceAsStream("CHANGELOG.MD");
+                    if (i == null) {
+                        return;
+                    }
+                    int bufferSize = 1024;
+                    char[] buffer = new char[bufferSize];
+                    StringBuilder out = new StringBuilder();
+                    Reader in = new InputStreamReader(i, StandardCharsets.UTF_8);
+                    for (int numRead; (numRead = in.read(buffer, 0, buffer.length)) > 0; ) {
+                        out.append(buffer, 0, numRead);
+                    }
+                    ChangeLogForm.start(Const.ChangeLogForm, MarkdownRenderer.toHtml(out.toString()));
+                } catch (Exception ex) {
+                    logger.error("error: {}", ex.toString());
+                }
+            });
+            aboutMenu.add(changelogItem);
+            JMenuItem thanksItem = new JMenuItem("thanks");
+            thanksItem.setIcon(SvgManager.TopMenuThanksIcon);
+            thanksItem.addActionListener(e -> {
+                try {
+                    InputStream i = MenuUtil.class.getClassLoader().getResourceAsStream("thanks.md");
+                    if (i == null) {
+                        return;
+                    }
+                    int bufferSize = 1024;
+                    char[] buffer = new char[bufferSize];
+                    StringBuilder out = new StringBuilder();
+                    Reader in = new InputStreamReader(i, StandardCharsets.UTF_8);
+                    for (int numRead; (numRead = in.read(buffer, 0, buffer.length)) > 0; ) {
+                        out.append(buffer, 0, numRead);
+                    }
+                    ChangeLogForm.start("THANKS", MarkdownRenderer.toHtml(out.toString()));
+                } catch (Exception ex) {
+                    logger.error("error: {}", ex.toString());
+                }
+            });
+            aboutMenu.add(thanksItem);
+            JMenuItem checkUpdateItem = new JMenuItem("check update");
+            checkUpdateItem.setIcon(SvgManager.TopMenuUpdateIcon);
+            checkUpdateItem.addActionListener(e -> new Thread(() -> {
+                logger.info("check update from aliyun oss");
+                HttpResponse resp = Y4Client.INSTANCE.get(Const.checkUpdateUrl);
+                if (resp == null) {
+                    return;
+                }
+                String body = new String(resp.getBody());
+                if (body.isEmpty()) {
+                    return;
+                }
+                String ver = body.trim();
+                LogUtil.info("latest: " + ver);
+                String output;
+                output = String.format("<html>" +
+                                "<p>本项目是免费开源软件，不存在任何商业版本/收费版本</p>" +
+                                "<p>This project is free and open-source software</p>" +
+                                "<p>There are no commercial or paid versions</p>" +
+                                "<p>%s: %s</p>" +
+                                "<p>%s: %s</p>" +
+                                "</html>",
+                        "当前版本 / Current Version", Const.version,
+                        "最新版本 / Latest Version", ver);
+                JOptionPane.showMessageDialog(MainForm.getInstance().getMasterPanel(), output);
+            }).start());
+            aboutMenu.add(checkUpdateItem);
+            return aboutMenu;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+}

@@ -1,0 +1,658 @@
+/*
+ * GPLv3 License
+ *
+ * Copyright (c) 2022-2026 4ra1n (Jar Analyzer Team)
+ *
+ * This project is distributed under the GPLv3 license.
+ *
+ * https://github.com/jar-analyzer/jar-analyzer/blob/master/LICENSE
+ */
+
+package me.n1ar4.jar.analyzer.gui;
+
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONWriter;
+import me.n1ar4.jar.analyzer.gui.util.SwingLayout;
+import me.n1ar4.jar.analyzer.gui.util.layout.GridConstraints;
+import me.n1ar4.jar.analyzer.mcp.McpClientConfig;
+import me.n1ar4.jar.analyzer.mcp.McpConfig;
+import me.n1ar4.jar.analyzer.mcp.McpEventListener;
+import me.n1ar4.jar.analyzer.mcp.McpServerLauncher;
+import me.n1ar4.jar.analyzer.mcp.tools.ToolDefinition;
+import me.n1ar4.jar.analyzer.mcp.tools.ToolRegistry;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.fife.ui.rtextarea.RTextScrollPane;
+
+import javax.swing.*;
+import javax.swing.border.TitledBorder;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.awt.datatransfer.StringSelection;
+import java.awt.event.*;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * MCP 控制面板
+ *
+ * <p>使用纯 Java Swing 构建，并通过兼容网格布局保持统一的视觉风格。</p>
+ *
+ * <p>自身作为一个独立 {@link JPanel}，由 {@code MCPAction.register} 通过
+ * {@code tabbedPanel.addTab("MCP", panel)} 加入到 MainForm 的 tabbedPanel 中，
+ * 这样可以作为独立面板维护，不影响主窗口的布局代码。</p>
+ */
+public class MCPPanel extends JPanel implements McpEventListener {
+
+    private static final SimpleDateFormat TIME_FMT =
+            new SimpleDateFormat("HH:mm:ss");
+
+    // ------- top: header label -------
+    private final JLabel descLabel = new JLabel();
+
+    // ------- group: server config -------
+    private final JTextField bindField = new JTextField("127.0.0.1");
+    private final JTextField portField = new JTextField("20032");
+    private final JCheckBox sseBox = new JCheckBox("启用 SSE 传输 (GET /sse + POST /message)", true);
+    private final JCheckBox streamableBox = new JCheckBox("启用 Streamable HTTP (POST /mcp)", true);
+    private final JCheckBox authBox = new JCheckBox("启用 Token 鉴权");
+    private final JTextField tokenField = new JTextField("JAR-ANALYZER-MCP-TOKEN");
+    private final JCheckBox debugBox = new JCheckBox("DEBUG 日志");
+    private final JButton clientConfigBtn = new JButton("查看 / 复制 MCP 配置");
+
+    // ------- group: control -------
+    private final JButton startBtn = new JButton("启动 MCP");
+    private final JButton stopBtn = new JButton("停止 MCP");
+    private final JLabel statusLabel = new JLabel("已停止");
+    private final JLabel sseLabel = new JLabel("SSE 会话: 0");
+    private final JLabel streamLabel = new JLabel("Streamable: 0");
+    private final JLabel reqStatLabel = new JLabel("请求 0 / 失败 0");
+    private final AtomicInteger reqOk = new AtomicInteger(0);
+    private final AtomicInteger reqFail = new AtomicInteger(0);
+
+    // ------- group: tools table -------
+    private final DefaultTableModel toolsModel = new DefaultTableModel(
+            new Object[]{"工具", "描述"}, 0) {
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return false;
+        }
+    };
+    private final JTable toolsTable = new JTable(toolsModel);
+
+    // ------- group: log -------
+    private final JTextArea logArea = new JTextArea();
+
+    public MCPPanel() {
+        SwingLayout.configureGrid(this, 5, 1, new Insets(8, 8, 8, 8), -1, -1);
+        buildHeader();
+        buildConfigPanel();
+        buildControlPanel();
+        buildToolsPanel();
+        buildLogPanel();
+        bindActions();
+        // 提前注册工具，让面板首次出现时即看到
+        McpServerLauncher.getInstance().initToolsIfNeeded();
+        refreshTools();
+        refreshUiState();
+    }
+
+    // ------------------------------------------------------------
+    // BUILD
+    // ------------------------------------------------------------
+    private void buildHeader() {
+        descLabel.setText("<html>" +
+                "<div style='padding:4px 0'>" +
+                "<span style='font-size:13pt; font-weight:bold; color:#2E5BFF'>♦ MCP Server (Java)</span>" +
+                " <span style='color:#666'>— 内嵌 MCP 服务器，纯 Java 实现，支持 <b>SSE</b> 与 <b>Streamable HTTP</b></span>" +
+                "</div>" +
+                "<div style='font-size:12pt; color:#666; padding-top:2px'>" +
+                "可被任意 MCP Client 接入（如 Claude Desktop、Cursor 等），暴露 jar-analyzer 的全部分析能力" +
+                "</div>" +
+                "</html>");
+        add(descLabel, gc(0, 0, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_CAN_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+    }
+
+    private void buildConfigPanel() {
+        JPanel p = new JPanel();
+        SwingLayout.configureGrid(p, 4, 4, new Insets(6, 8, 6, 8), -1, -1);
+        p.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createEtchedBorder(), "配置",
+                TitledBorder.DEFAULT_JUSTIFICATION,
+                TitledBorder.DEFAULT_POSITION));
+
+        p.add(new JLabel("Bind"), gc(0, 0, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(bindField, gc(0, 1, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_WANT_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(new JLabel("Port"), gc(0, 2, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(portField, gc(0, 3, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_WANT_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        p.add(sseBox, gc(1, 0, 1, 2,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(streamableBox, gc(1, 2, 1, 2,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        p.add(authBox, gc(2, 0, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        JPanel tokenPanel = new JPanel(new BorderLayout(6, 0));
+        tokenPanel.setOpaque(false);
+        tokenPanel.add(new JLabel("Token"), BorderLayout.WEST);
+        tokenPanel.add(tokenField, BorderLayout.CENTER);
+        p.add(tokenPanel, gc(2, 1, 1, 3,
+                GridBagConstraints.WEST, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_WANT_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        p.add(debugBox, gc(3, 0, 1, 2,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(clientConfigBtn, gc(3, 2, 1, 2,
+                GridBagConstraints.EAST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        add(p, gc(1, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_CAN_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+    }
+
+    private void buildControlPanel() {
+        JPanel p = new JPanel();
+        SwingLayout.configureGrid(p, 2, 6, new Insets(6, 8, 6, 8), -1, -1);
+        p.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createEtchedBorder(), "控制 / 状态",
+                TitledBorder.DEFAULT_JUSTIFICATION,
+                TitledBorder.DEFAULT_POSITION));
+
+        startBtn.setBackground(new Color(0x2E5BFF));
+        startBtn.setForeground(Color.WHITE);
+        stopBtn.setBackground(new Color(0xCC3333));
+        stopBtn.setForeground(Color.WHITE);
+
+        p.add(startBtn, gc(0, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_CAN_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(stopBtn, gc(0, 1, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_CAN_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        statusLabel.setForeground(new Color(0xCC3333));
+        p.add(new JLabel("状态:"), gc(0, 2, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(statusLabel, gc(0, 3, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_WANT_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(sseLabel, gc(0, 4, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+        p.add(streamLabel, gc(0, 5, 1, 1,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        p.add(reqStatLabel, gc(1, 0, 1, 6,
+                GridBagConstraints.WEST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        add(p, gc(2, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.HORIZONTAL,
+                SwingLayout.SIZEPOLICY_CAN_GROW,
+                SwingLayout.SIZEPOLICY_FIXED));
+    }
+
+    private void buildToolsPanel() {
+        JPanel p = new JPanel();
+        SwingLayout.configureGrid(p, 1, 1, new Insets(6, 8, 6, 8), -1, -1);
+        p.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createEtchedBorder(), "已注册工具",
+                TitledBorder.DEFAULT_JUSTIFICATION,
+                TitledBorder.DEFAULT_POSITION));
+        toolsTable.setFillsViewportHeight(true);
+        toolsTable.setRowHeight(20);
+        toolsTable.setToolTipText("双击或回车查看工具详情");
+        toolsTable.getColumnModel().getColumn(0).setPreferredWidth(220);
+        toolsTable.getColumnModel().getColumn(1).setPreferredWidth(600);
+        JScrollPane sp = new JScrollPane(toolsTable);
+        p.add(sp, gc(0, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.BOTH,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK));
+        add(p, gc(3, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.BOTH,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK));
+    }
+
+    private void buildLogPanel() {
+        JPanel p = new JPanel();
+        SwingLayout.configureGrid(p, 1, 2, new Insets(6, 8, 6, 8), -1, -1);
+        p.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createEtchedBorder(), "日志",
+                TitledBorder.DEFAULT_JUSTIFICATION,
+                TitledBorder.DEFAULT_POSITION));
+        logArea.setEditable(false);
+        logArea.setLineWrap(true);
+        logArea.setWrapStyleWord(true);
+        logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JScrollPane sp = new JScrollPane(logArea);
+        sp.setPreferredSize(new Dimension(600, 160));
+        p.add(sp, gc(0, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.BOTH,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK));
+
+        JButton clearBtn = new JButton("清空日志");
+        clearBtn.addActionListener(e -> SwingUtilities.invokeLater(() -> logArea.setText("")));
+        p.add(clearBtn, gc(0, 1, 1, 1,
+                GridBagConstraints.NORTHEAST, GridBagConstraints.NONE,
+                SwingLayout.SIZEPOLICY_FIXED,
+                SwingLayout.SIZEPOLICY_FIXED));
+
+        add(p, gc(4, 0, 1, 1,
+                GridBagConstraints.CENTER, GridBagConstraints.BOTH,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK,
+                SwingLayout.SIZEPOLICY_CAN_GROW | SwingLayout.SIZEPOLICY_CAN_SHRINK));
+    }
+
+    private static GridConstraints gc(int row, int col, int rowSpan, int colSpan,
+                                      int anchor, int fill,
+                                      int horizontalSizePolicy,
+                                      int verticalSizePolicy) {
+        return SwingLayout.constraints(row, col, rowSpan, colSpan,
+                anchor, fill, horizontalSizePolicy, verticalSizePolicy);
+    }
+
+    // ------------------------------------------------------------
+    // BIND
+    // ------------------------------------------------------------
+    private void bindActions() {
+        ActionListener startAl = new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                doStart();
+            }
+        };
+        ActionListener stopAl = new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                doStop();
+            }
+        };
+        startBtn.addActionListener(startAl);
+        stopBtn.addActionListener(stopAl);
+        clientConfigBtn.addActionListener(e -> showClientConfig());
+        bindToolsTableActions();
+    }
+
+    /**
+     * 已注册工具表格：双击或回车查看工具详情
+     * （与文件树打开类文件一致使用双击交互，单击仅选中行）
+     */
+    private void bindToolsTableActions() {
+        toolsTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2) {
+                    showToolDetail(toolsTable.rowAtPoint(e.getPoint()));
+                }
+            }
+        });
+        toolsTable.getInputMap(JComponent.WHEN_FOCUSED).put(
+                KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "showToolDetail");
+        toolsTable.getActionMap().put("showToolDetail", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                showToolDetail(toolsTable.getSelectedRow());
+            }
+        });
+    }
+
+    /**
+     * 弹窗展示单个工具的完整信息：名称 / 描述 / 入参 Schema。
+     * 表格中描述列可能被截断，Schema 完全没有展示
+     */
+    private void showToolDetail(int row) {
+        if (row < 0 || row >= toolsTable.getRowCount()) {
+            return;
+        }
+        Object nameObj = toolsModel.getValueAt(row, 0);
+        if (nameObj == null) {
+            return;
+        }
+        ToolDefinition def = ToolRegistry.getInstance().get(nameObj.toString());
+        if (def == null) {
+            return;
+        }
+
+        JLabel nameLabel = new JLabel(def.getName());
+        nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD, 14f));
+
+        JTextArea descArea = new JTextArea(
+                def.getDescription() == null ? "" : def.getDescription(), 3, 48);
+        descArea.setEditable(false);
+        descArea.setLineWrap(true);
+        descArea.setWrapStyleWord(true);
+        JScrollPane descScroll = new JScrollPane(descArea);
+
+        JPanel descPanel = new JPanel(new BorderLayout(0, 2));
+        descPanel.add(new JLabel("描述"), BorderLayout.NORTH);
+        descPanel.add(descScroll, BorderLayout.CENTER);
+
+        String schemaJson = def.getInputSchema() == null ? "{}"
+                : JSON.toJSONString(def.getInputSchema(), JSONWriter.Feature.PrettyFormat);
+        RSyntaxTextArea schemaArea = new RSyntaxTextArea(10, 48);
+        schemaArea.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_JSON);
+        schemaArea.setEditable(false);
+        schemaArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        schemaArea.setLineWrap(false);
+        schemaArea.setHighlightCurrentLine(false);
+        schemaArea.setAntiAliasingEnabled(true);
+        schemaArea.setText(schemaJson);
+        schemaArea.setCaretPosition(0);
+        RTextScrollPane schemaScroll = new RTextScrollPane(schemaArea);
+        schemaScroll.setLineNumbersEnabled(false);
+
+        JPanel schemaPanel = new JPanel(new BorderLayout(0, 2));
+        schemaPanel.add(new JLabel("入参 Schema"), BorderLayout.NORTH);
+        schemaPanel.add(schemaScroll, BorderLayout.CENTER);
+
+        JPanel content = new JPanel(new BorderLayout(0, 8));
+        content.add(nameLabel, BorderLayout.NORTH);
+        content.add(descPanel, BorderLayout.CENTER);
+        content.add(schemaPanel, BorderLayout.SOUTH);
+
+        JOptionPane.showMessageDialog(this, content,
+                "工具详情", JOptionPane.PLAIN_MESSAGE);
+    }
+
+    private void showClientConfig() {
+        List<McpClientConfig.Transport> transports = new ArrayList<>();
+        if (sseBox.isSelected()) {
+            transports.add(McpClientConfig.Transport.SSE);
+        }
+        if (streamableBox.isSelected()) {
+            transports.add(McpClientConfig.Transport.STREAMABLE_HTTP);
+        }
+        if (transports.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "请先选择 SSE 或 Streamable HTTP。",
+                    "MCP", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        String bind = bindField.getText().trim();
+        int port = parseInt(portField.getText().trim(), 20032);
+        if (port < 1 || port > 65535) {
+            JOptionPane.showMessageDialog(this,
+                    "端口必须在 1 到 65535 之间。",
+                    "MCP", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        JComboBox<McpClientConfig.Transport> transportBox =
+                new JComboBox<>(transports.toArray(new McpClientConfig.Transport[0]));
+        RSyntaxTextArea configArea = new RSyntaxTextArea(9, 48);
+        configArea.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_JSON);
+        configArea.setEditable(false);
+        configArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        configArea.setLineWrap(false);
+        configArea.setHighlightCurrentLine(false);
+        configArea.setAntiAliasingEnabled(true);
+        RTextScrollPane configScroll = new RTextScrollPane(configArea);
+        configScroll.setLineNumbersEnabled(false);
+
+        Runnable refreshConfig = () -> {
+            McpClientConfig.Transport selected =
+                    (McpClientConfig.Transport) transportBox.getSelectedItem();
+            configArea.setText(McpClientConfig.build(selected, bind, port));
+            configArea.setCaretPosition(0);
+        };
+        transportBox.addActionListener(e -> refreshConfig.run());
+        refreshConfig.run();
+
+        JButton copyBtn = new JButton("一键复制配置");
+        copyBtn.addActionListener(e -> {
+            try {
+                StringSelection selection = new StringSelection(configArea.getText());
+                Toolkit.getDefaultToolkit().getSystemClipboard()
+                        .setContents(selection, selection);
+                copyBtn.setText("已复制");
+                Timer timer = new Timer(1200, event -> copyBtn.setText("一键复制配置"));
+                timer.setRepeats(false);
+                timer.start();
+            } catch (IllegalStateException | HeadlessException | SecurityException ex) {
+                JOptionPane.showMessageDialog(this,
+                        "复制失败: " + ex.getMessage(),
+                        "MCP", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        JPanel selectorPanel = new JPanel(new BorderLayout(8, 0));
+        selectorPanel.add(new JLabel("传输方式"), BorderLayout.WEST);
+        selectorPanel.add(transportBox, BorderLayout.CENTER);
+        selectorPanel.add(copyBtn, BorderLayout.EAST);
+
+        JPanel content = new JPanel(new BorderLayout(0, 8));
+        content.add(selectorPanel, BorderLayout.NORTH);
+        content.add(configScroll, BorderLayout.CENTER);
+        content.add(new JLabel("配置内容会根据已启用的传输方式和当前 Bind / Port 自动生成。"),
+                BorderLayout.SOUTH);
+
+        JOptionPane.showMessageDialog(this, content,
+                "MCP 客户端配置", JOptionPane.PLAIN_MESSAGE);
+    }
+
+    private void doStart() {
+        // 1. 准备配置 + 校验
+        final McpConfig cfg;
+        try {
+            cfg = new McpConfig();
+            cfg.setBind(bindField.getText().trim());
+            cfg.setPort(parseInt(portField.getText().trim(), 20032));
+            cfg.setEnableSse(sseBox.isSelected());
+            cfg.setEnableStreamable(streamableBox.isSelected());
+            cfg.setAuth(authBox.isSelected());
+            cfg.setToken(tokenField.getText());
+            cfg.setDebug(debugBox.isSelected());
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this,
+                    "配置无效: " + ex.getMessage(),
+                    "MCP", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (!cfg.isEnableSse() && !cfg.isEnableStreamable()) {
+            JOptionPane.showMessageDialog(this,
+                    "至少启用一个传输方式（SSE 或 Streamable HTTP）",
+                    "MCP", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // 2. 弹进度对话框（非模态），立刻禁用启动按钮防双击
+        startBtn.setEnabled(false);
+        Window owner = SwingUtilities.getWindowAncestor(this);
+        final McpStartDialog dlg = new McpStartDialog(owner);
+        dlg.showAsync();
+
+        // 3. 启动放到后台线程执行，通过 progress 回调把阶段同步到对话框
+        Thread t = new Thread(() -> {
+            try {
+                McpServerLauncher.getInstance().start(cfg, MCPPanel.this, dlg::onStage);
+                // 成功
+                SwingUtilities.invokeLater(() -> {
+                    appendLog("INFO ", "MCP 已启动: http://" + cfg.getBind() + ":" + cfg.getPort());
+                    if (cfg.isEnableSse()) {
+                        appendLog("INFO ", "SSE 接入: http://" + cfg.getBind() + ":" + cfg.getPort() + "/sse");
+                    }
+                    if (cfg.isEnableStreamable()) {
+                        appendLog("INFO ", "Streamable: http://" + cfg.getBind() + ":" + cfg.getPort() + "/mcp");
+                    }
+                    refreshUiState();
+                });
+                dlg.markDone();
+            } catch (IOException ex) {
+                dlg.markFailed("启动失败: " + ex.getMessage());
+                SwingUtilities.invokeLater(() -> {
+                    appendLog("ERROR", "启动失败: " + ex.getMessage());
+                    refreshUiState();
+                });
+            } catch (IllegalStateException ex) {
+                dlg.markFailed(ex.getMessage());
+                SwingUtilities.invokeLater(() -> {
+                    appendLog("WARN ", ex.getMessage());
+                    refreshUiState();
+                });
+            } catch (Throwable ex) {
+                dlg.markFailed(ex.getClass().getSimpleName() + ": " + ex.getMessage());
+                SwingUtilities.invokeLater(() -> {
+                    appendLog("ERROR", ex.getClass().getSimpleName() + ": " + ex.getMessage());
+                    refreshUiState();
+                });
+            }
+        }, "mcp-start-thread");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void doStop() {
+        try {
+            McpServerLauncher.getInstance().stop();
+            appendLog("INFO ", "MCP 已停止");
+        } catch (Exception ex) {
+            appendLog("ERROR", ex.getMessage());
+        }
+        refreshUiState();
+    }
+
+    private void refreshUiState() {
+        boolean running = McpServerLauncher.getInstance().isRunning();
+        startBtn.setEnabled(!running);
+        stopBtn.setEnabled(running);
+        bindField.setEnabled(!running);
+        portField.setEnabled(!running);
+        sseBox.setEnabled(!running);
+        streamableBox.setEnabled(!running);
+        authBox.setEnabled(!running);
+        tokenField.setEnabled(!running);
+        debugBox.setEnabled(!running);
+        if (running) {
+            statusLabel.setText("运行中");
+            statusLabel.setForeground(new Color(0x1B7F3A));
+        } else {
+            statusLabel.setText("已停止");
+            statusLabel.setForeground(new Color(0xCC3333));
+            sseLabel.setText("SSE 会话: 0");
+            streamLabel.setText("Streamable: 0");
+        }
+    }
+
+    private void refreshTools() {
+        toolsModel.setRowCount(0);
+        List<ToolDefinition> tools = new ArrayList<>(ToolRegistry.getInstance().list());
+        tools.sort(Comparator.comparing(ToolDefinition::getName,
+                String.CASE_INSENSITIVE_ORDER));
+        for (ToolDefinition def : tools) {
+            toolsModel.addRow(new Object[]{def.getName(),
+                    def.getDescription() == null ? "" : def.getDescription()});
+        }
+    }
+
+    private static int parseInt(String s, int def) {
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception e) {
+            return def;
+        }
+    }
+
+    private void appendLog(String level, String message) {
+        String stamp = TIME_FMT.format(new Date());
+        final String text = "[" + stamp + "] [" + level + "] " + message + "\n";
+        SwingUtilities.invokeLater(() -> {
+            logArea.append(text);
+            // 控制日志长度
+            int max = 200000;
+            if (logArea.getDocument().getLength() > max) {
+                try {
+                    logArea.getDocument().remove(0, logArea.getDocument().getLength() - max);
+                } catch (Exception ignored) {
+                }
+            }
+            logArea.setCaretPosition(logArea.getDocument().getLength());
+        });
+    }
+
+    // ------------------------------------------------------------
+    // McpEventListener
+    // ------------------------------------------------------------
+    @Override
+    public void onLog(String message) {
+        appendLog("INFO ", message);
+    }
+
+    @Override
+    public void onWarn(String message) {
+        appendLog("WARN ", message);
+    }
+
+    @Override
+    public void onError(String message) {
+        appendLog("ERROR", message);
+    }
+
+    @Override
+    public void onRequest(String transport, String method, boolean ok) {
+        if (ok) {
+            reqOk.incrementAndGet();
+        } else {
+            reqFail.incrementAndGet();
+        }
+        appendLog(ok ? "REQ  " : "REQ! ",
+                "[" + transport + "] " + (method == null ? "(no method)" : method)
+                        + (ok ? "" : "  -- failed"));
+        SwingUtilities.invokeLater(() -> reqStatLabel.setText(
+                "请求 " + reqOk.get() + " / 失败 " + reqFail.get()));
+    }
+
+    @Override
+    public void onConnectionChanged(int sse, int streamable) {
+        SwingUtilities.invokeLater(() -> {
+            sseLabel.setText("SSE 会话: " + sse);
+            streamLabel.setText("Streamable: " + streamable);
+        });
+    }
+}

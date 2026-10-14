@@ -1,0 +1,205 @@
+/*
+ * GPLv3 License
+ *
+ * Copyright (c) 2022-2026 4ra1n (Jar Analyzer Team)
+ *
+ * This project is distributed under the GPLv3 license.
+ *
+ * https://github.com/jar-analyzer/jar-analyzer/blob/master/LICENSE
+ */
+
+package me.n1ar4.jar.analyzer.gui.util;
+
+import me.n1ar4.jar.analyzer.gui.MainForm;
+import me.n1ar4.jar.analyzer.gui.OpcodeForm;
+import me.n1ar4.log.LogManager;
+import me.n1ar4.log.Logger;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.fife.ui.rtextarea.RTextScrollPane;
+
+import javax.swing.*;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.DefaultHighlighter;
+import javax.swing.text.Highlighter;
+import java.awt.*;
+import java.util.ArrayList;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class SyntaxAreaHelper {
+    private static final Logger logger = LogManager.getLogger();
+    private static int currentIndex = 0;
+    private static ArrayList<Integer> searchResults = null;
+    private static CodeTabPanel codeTabPanel = null;
+
+    public static void buildJava(JPanel codePanel) {
+        // 创建多标签页代码编辑器面板
+        codeTabPanel = new CodeTabPanel();
+        SwingLayout.add(codePanel, codeTabPanel, 0, 0, 1, 1, GridBagConstraints.CENTER, GridBagConstraints.BOTH, SwingLayout.SIZEPOLICY_CAN_SHRINK | SwingLayout.SIZEPOLICY_CAN_GROW, SwingLayout.SIZEPOLICY_CAN_SHRINK | SwingLayout.SIZEPOLICY_CAN_GROW, null, null, null, 0);
+
+        // MainForm.codeArea 初始指向欢迎 Tab 的编辑器
+        RSyntaxTextArea activeArea = codeTabPanel.getActiveCodeArea();
+        if (activeArea != null) {
+            MainForm.setCodeArea(activeArea);
+        }
+
+        MainForm.setCodeTabPanel(codeTabPanel);
+    }
+
+    /**
+     * 获取 CodeTabPanel 实例
+     */
+    public static CodeTabPanel getCodeTabPanel() {
+        return codeTabPanel;
+    }
+
+    /**
+     * 按 Tab 的 key（类名或配置文件路径）选择语法高亮样式。
+     * 类名 key（如 com/foo/Bar）没有扩展名，回落到 Java；
+     * 配置文件按扩展名选择对应样式（.toml 无专用样式，
+     * 与 .conf/.config/.ini 一起按最接近的 ini 处理）
+     */
+    public static String styleForKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return SyntaxConstants.SYNTAX_STYLE_JAVA;
+        }
+        String leaf = key;
+        int sep = Math.max(key.lastIndexOf('/'), key.lastIndexOf('\\'));
+        if (sep >= 0 && sep < key.length() - 1) {
+            leaf = key.substring(sep + 1);
+        }
+        int dot = leaf.lastIndexOf('.');
+        if (dot < 0) {
+            return SyntaxConstants.SYNTAX_STYLE_JAVA;
+        }
+        switch (leaf.substring(dot + 1).toLowerCase(Locale.ROOT)) {
+            case "xml":
+                return SyntaxConstants.SYNTAX_STYLE_XML;
+            case "yml":
+            case "yaml":
+                return SyntaxConstants.SYNTAX_STYLE_YAML;
+            case "json":
+                return SyntaxConstants.SYNTAX_STYLE_JSON;
+            case "properties":
+                return SyntaxConstants.SYNTAX_STYLE_PROPERTIES_FILE;
+            case "ini":
+            case "conf":
+            case "config":
+            case "toml":
+                return SyntaxConstants.SYNTAX_STYLE_INI;
+            default:
+                return SyntaxConstants.SYNTAX_STYLE_JAVA;
+        }
+    }
+
+    public static int findWordStart(String text, int position) {
+        while (position > 0 && Character.isJavaIdentifierPart(text.charAt(position - 1))) {
+            position--;
+        }
+        return position;
+    }
+
+    public static int findWordEnd(String text, int position) {
+        while (position < text.length() && Character.isJavaIdentifierPart(text.charAt(position))) {
+            position++;
+        }
+        return position;
+    }
+
+    // 记录每次匹配的结束位置（用于高亮正确长度）
+    private static ArrayList<Integer> searchResultEnds = null;
+
+    public static int addSearchAction(String text) {
+        return addSearchAction(text, false, false);
+    }
+
+    /**
+     * @param text          搜索文本或正则表达式
+     * @param caseSensitive 是否大小写敏感
+     * @param regex         是否正则模式
+     */
+    public static int addSearchAction(String text, boolean caseSensitive, boolean regex) {
+        searchResults = new ArrayList<>();
+        searchResultEnds = new ArrayList<>();
+        currentIndex = 0;
+        RSyntaxTextArea currentArea = (RSyntaxTextArea) MainForm.getCodeArea();
+        if (currentArea == null) return 0;
+        String content = currentArea.getText();
+        try {
+            int flags = caseSensitive ? 0 : Pattern.CASE_INSENSITIVE;
+            String pattern = regex ? text : Pattern.quote(text);
+            Matcher matcher = Pattern.compile(pattern, flags).matcher(content);
+            while (matcher.find()) {
+                searchResults.add(matcher.start());
+                searchResultEnds.add(matcher.end());
+            }
+        } catch (Exception ignored) {
+            // 正则非法时不报错，返回 0 结果
+        }
+        currentIndex = 0;
+        return searchResults.size();
+    }
+
+    public static int getCurrentIndex() {
+        return currentIndex;
+    }
+
+    public static void navigate(String text, boolean forward) {
+        navigate(text, forward, false, false);
+    }
+
+    public static void navigate(String text, boolean forward, boolean caseSensitive, boolean regex) {
+        if (searchResults == null || MainForm.getCodeArea() == null) return;
+        if (searchResults.isEmpty()) return;
+        if (forward) {
+            currentIndex = (currentIndex + 1) % searchResults.size();
+        } else {
+            currentIndex = (currentIndex - 1 + searchResults.size()) % searchResults.size();
+        }
+        highlightResult();
+    }
+
+    private static void highlightResult() {
+        if (searchResults == null || searchResults.isEmpty()) return;
+        RSyntaxTextArea currentArea = (RSyntaxTextArea) MainForm.getCodeArea();
+        if (currentArea == null) return;
+        int start = searchResults.get(currentIndex);
+        int end = (searchResultEnds != null && currentIndex < searchResultEnds.size())
+                ? searchResultEnds.get(currentIndex) : start;
+        try {
+            currentArea.setCaretPosition(start);
+            Highlighter highlighter = currentArea.getHighlighter();
+            highlighter.removeAllHighlights();
+            highlighter.addHighlight(start, end,
+                    new DefaultHighlighter.DefaultHighlightPainter(Color.CYAN));
+        } catch (BadLocationException ex) {
+            logger.error("bad location: {}", ex.toString());
+        }
+    }
+
+    public static void buildJavaOpcode(JPanel codePanel) {
+        RSyntaxTextArea textArea = new RSyntaxTextArea();
+        textArea.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_JAVA);
+        textArea.setCodeFoldingEnabled(false);
+
+        textArea.setFont(textArea.getFont().deriveFont(MainForm.FONT_SIZE));
+
+        RTextScrollPane sp = new RTextScrollPane(textArea);
+        SwingLayout.add(codePanel, sp, 0, 0, 1, 1, GridBagConstraints.CENTER, GridBagConstraints.BOTH, SwingLayout.SIZEPOLICY_CAN_SHRINK | SwingLayout.SIZEPOLICY_CAN_GROW, SwingLayout.SIZEPOLICY_CAN_SHRINK | SwingLayout.SIZEPOLICY_CAN_GROW, null, null, null, 0);
+        OpcodeForm.setCodeArea(textArea);
+    }
+
+    public static JTextArea buildSQL(JPanel codePanel) {
+        RSyntaxTextArea textArea = new RSyntaxTextArea(10, 80);
+        textArea.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_SQL);
+        textArea.setCodeFoldingEnabled(true);
+
+        textArea.setFont(textArea.getFont().deriveFont(MainForm.FONT_SIZE));
+
+        RTextScrollPane sp = new RTextScrollPane(textArea);
+        SwingLayout.add(codePanel, sp, 0, 0, 1, 1, GridBagConstraints.CENTER, GridBagConstraints.BOTH, SwingLayout.SIZEPOLICY_CAN_SHRINK | SwingLayout.SIZEPOLICY_CAN_GROW, SwingLayout.SIZEPOLICY_CAN_SHRINK | SwingLayout.SIZEPOLICY_CAN_GROW, null, null, null, 0);
+        return textArea;
+    }
+}

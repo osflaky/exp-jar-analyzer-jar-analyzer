@@ -1,0 +1,33 @@
+@echo off
+setlocal
+
+rem set file name
+set "jar-analyzer=jar-analyzer-6.2.jar"
+
+rem env
+set "jre_bin=jre\bin\java.exe"
+set "cur_dir=%~dp0%"
+set "jre_bin_abs="%cur_dir%%jre_bin%""
+
+rem jvm args
+set "other_args=-Dfile.encoding=UTF-8"
+set "java_args=--sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -XX:+UseZGC -Xms2g %other_args%"
+set "java_cp=lib\%jar-analyzer%"
+set "main_class=me.n1ar4.jar.analyzer.starter.Application"
+
+rem support default metal win win-classic motif mac gtk cross aqua nimbus
+set "theme_name=default"
+rem log level (debug info warn error)
+set "log_level=info"
+rem arg --no-check to disable update check
+rem arg --skip-load to disable loading animation
+rem arg --security to enable security mode
+rem arg --font-size to select font size (example: --font-size 16)
+set "program_args=--theme %theme_name% --log-level %log_level%"
+
+rem start jar
+echo [*] RUN %jar-analyzer% ON JAVA 25
+echo [*] JVM ARGS: %java_args%
+%jre_bin_abs% %java_args% -cp %java_cp% %main_class% gui %program_args%
+
+endlocal

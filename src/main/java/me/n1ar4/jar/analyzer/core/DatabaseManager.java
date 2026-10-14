@@ -1,0 +1,732 @@
+/*
+ * GPLv3 License
+ *
+ * Copyright (c) 2022-2026 4ra1n (Jar Analyzer Team)
+ *
+ * This project is distributed under the GPLv3 license.
+ *
+ * https://github.com/jar-analyzer/jar-analyzer/blob/master/LICENSE
+ */
+
+package me.n1ar4.jar.analyzer.core;
+
+import cn.hutool.core.util.StrUtil;
+import me.n1ar4.jar.analyzer.analyze.spring.SpringConstant;
+import me.n1ar4.jar.analyzer.analyze.spring.SpringController;
+import me.n1ar4.jar.analyzer.analyze.spring.SpringMapping;
+import me.n1ar4.jar.analyzer.core.mapper.*;
+import me.n1ar4.jar.analyzer.core.reference.AnnoReference;
+import me.n1ar4.jar.analyzer.core.reference.ClassReference;
+import me.n1ar4.jar.analyzer.core.reference.MethodReference;
+import me.n1ar4.jar.analyzer.entity.*;
+import me.n1ar4.jar.analyzer.gui.MainForm;
+import me.n1ar4.jar.analyzer.gui.util.LogUtil;
+import me.n1ar4.jar.analyzer.utils.OSUtil;
+import me.n1ar4.jar.analyzer.utils.PartitionUtils;
+import me.n1ar4.log.LogManager;
+import me.n1ar4.log.Logger;
+import org.apache.ibatis.session.SqlSession;
+import org.apache.ibatis.session.SqlSessionFactory;
+
+import java.util.*;
+
+public class DatabaseManager {
+    private static final Logger logger = LogManager.getLogger();
+    public static int PART_SIZE = 100;
+    private static SqlSession session;
+    private static ClassMapper classMapper;
+    private static MemberMapper memberMapper;
+    private static JarMapper jarMapper;
+    private static AnnoMapper annoMapper;
+    private static MethodMapper methodMapper;
+    private static StringMapper stringMapper;
+    private static InterfaceMapper interfaceMapper;
+    private static ClassFileMapper classFileMapper;
+    private static MethodImplMapper methodImplMapper;
+    private static MethodCallMapper methodCallMapper;
+    private static SpringControllerMapper springCMapper;
+    private static SpringInterceptorMapper springIMapper;
+    private static SpringMethodMapper springMMapper;
+    private static JavaWebMapper javaWebMapper;
+    private static DFSMapper dfsMapper;
+    private static DFSListMapper dfsListMapper;
+    private static FavMapper favMapper;
+    private static HisMapper hisMapper;
+
+    // --inner-jar 仅解析此jar包引用的 jdk 类及其它jar中的类,但不会保存其它jar的jarId等信息
+    private static final ClassReference notFoundClassReference = new ClassReference(
+            -1,
+            -1,
+            "unknown-class",
+            "unknown-super-class",
+            null,
+            false,
+            null,
+            null,
+            "unknown-jar-name",
+            -1);
+
+
+    static {
+        openInternal();
+    }
+
+    /**
+     * 打开会话与全部 mapper 并建表（db 文件不存在时由 SQLite 自动创建）
+     */
+    private static synchronized void openInternal() {
+        logger.info("init database");
+        LogUtil.info("init database");
+        SqlSessionFactory factory = SqlSessionFactoryUtil.sqlSessionFactory;
+        session = factory.openSession(true);
+        classMapper = session.getMapper(ClassMapper.class);
+        jarMapper = session.getMapper(JarMapper.class);
+        annoMapper = session.getMapper(AnnoMapper.class);
+        methodMapper = session.getMapper(MethodMapper.class);
+        memberMapper = session.getMapper(MemberMapper.class);
+        stringMapper = session.getMapper(StringMapper.class);
+        classFileMapper = session.getMapper(ClassFileMapper.class);
+        interfaceMapper = session.getMapper(InterfaceMapper.class);
+        methodCallMapper = session.getMapper(MethodCallMapper.class);
+        methodImplMapper = session.getMapper(MethodImplMapper.class);
+        springCMapper = session.getMapper(SpringControllerMapper.class);
+        springIMapper = session.getMapper(SpringInterceptorMapper.class);
+        springMMapper = session.getMapper(SpringMethodMapper.class);
+        javaWebMapper = session.getMapper(JavaWebMapper.class);
+        dfsMapper = session.getMapper(DFSMapper.class);
+        dfsListMapper = session.getMapper(DFSListMapper.class);
+        favMapper = session.getMapper(FavMapper.class);
+        hisMapper = session.getMapper(HisMapper.class);
+        InitMapper initMapper = session.getMapper(InitMapper.class);
+        initMapper.createJarTable();
+        initMapper.createClassTable();
+        initMapper.createClassFileTable();
+        initMapper.createMemberTable();
+        initMapper.createMethodTable();
+        initMapper.createAnnoTable();
+        initMapper.createInterfaceTable();
+        initMapper.createMethodCallTable();
+        initMapper.createMethodImplTable();
+        initMapper.createStringTable();
+        initMapper.createSpringControllerTable();
+        initMapper.createSpringMappingTable();
+        initMapper.createSpringInterceptorTable();
+        initMapper.createJavaWebTable();
+        // DFS
+        initMapper.createDFSResultTable();
+        initMapper.createDFSResultListTable();
+        // NOTE
+        initMapper.createFavoriteTable();
+        initMapper.createHistoryTable();
+        searchOptsApplied = false;
+        logger.info("create database finish");
+        LogUtil.info("create database finish");
+    }
+
+    /**
+     * 重建 jar-analyzer.db 前调用：关闭常驻会话并把 mapper 置空，
+     * 随后关闭整个连接池（见 {@link SqlSessionFactoryUtil#rebuildFactory}），
+     * 使旧库文件不再被任何连接占用，之后删除旧库文件并调用
+     * {@link #reopen()} 打开新库。close 与 reopen 之间调用本类的
+     * save/query 方法会 NPE，该窗口只应存在于删除文件的前后
+     */
+    public static synchronized void closeForRebuild() {
+        try {
+            if (session != null) {
+                session.close();
+            }
+        } catch (Throwable t) {
+            logger.warn("close database session failed: {}", t.toString());
+        }
+        session = null;
+        classMapper = null;
+        jarMapper = null;
+        annoMapper = null;
+        methodMapper = null;
+        memberMapper = null;
+        stringMapper = null;
+        classFileMapper = null;
+        interfaceMapper = null;
+        methodCallMapper = null;
+        methodImplMapper = null;
+        springCMapper = null;
+        springIMapper = null;
+        springMMapper = null;
+        javaWebMapper = null;
+        dfsMapper = null;
+        dfsListMapper = null;
+        favMapper = null;
+        hisMapper = null;
+        SqlSessionFactoryUtil.rebuildFactory();
+    }
+
+    /**
+     * 删除旧库文件后调用：重新打开会话并建表（文件不存在时新建）。
+     * 已处于打开状态时为空操作
+     */
+    public static synchronized void reopen() {
+        if (session != null) {
+            return;
+        }
+        openInternal();
+    }
+
+    /**
+     * Builds (idempotently) the indexes required by the EL search
+     * engine and applies SQLite PRAGMAs that drastically improve read
+     * throughput for analytical workloads.
+     * <p>
+     * Cheap on a freshly-built DB: each {@code CREATE INDEX IF NOT
+     * EXISTS} is a no-op once the index already exists. Called once
+     * lazily by the search engine to avoid paying the cost when the
+     * user never opens EL Search.
+     */
+    private static volatile boolean searchOptsApplied = false;
+
+    public static synchronized void ensureSearchOptimizations() {
+        if (searchOptsApplied) {
+            return;
+        }
+        searchOptsApplied = true;
+        try {
+            InitMapper im = session.getMapper(InitMapper.class);
+            im.createIdxMethodClass();
+            im.createIdxMethodName();
+            im.createIdxAnnoClassMethod();
+            im.createIdxAnnoName();
+            im.createIdxMemberClass();
+            im.createIdxCallCaller();
+            im.createIdxCallCallee();
+            im.createIdxClassTableName();
+            im.createIdxIfaceClass();
+            im.createIdxImplClass();
+            im.createIdxImplImpl();
+            // PRAGMAs need raw JDBC. WAL + NORMAL sync gives multi-
+            // reader concurrency without sacrificing crash safety.
+            // IMPORTANT: do NOT close the Connection returned by
+            // SqlSession.getConnection() -- it belongs to the session
+            // and closing it returns it to the DBCP pool, breaking
+            // every subsequent Mapper call.
+            java.sql.Connection conn = session.getConnection();
+            try (java.sql.Statement st = conn.createStatement()) {
+                st.execute("PRAGMA journal_mode=WAL");
+                st.execute("PRAGMA synchronous=NORMAL");
+                st.execute("PRAGMA temp_store=MEMORY");
+                st.execute("PRAGMA mmap_size=268435456");
+                st.execute("PRAGMA cache_size=-65536");
+                // ANALYZE feeds the planner with cardinality stats so
+                // it picks the right index even on small tables.
+                st.execute("ANALYZE");
+            }
+            logger.info("EL search optimizations applied (indexes + PRAGMAs)");
+        } catch (Throwable t) {
+            // Optimization is best-effort -- search will still work
+            // (slower) without it. Never let this kill the search.
+            logger.warn("ensureSearchOptimizations failed: {}", t.toString());
+        }
+    }
+
+    public static void saveDFS(DFSResultEntity dfsResultEntity) {
+        // closeForRebuild 与 reopen 之间的窗口期可能被 DFS 工作线程调用，
+        // mapper 已置空，跳过而不是让 NPE 冒泡到全局异常处理器
+        if (dfsMapper == null) {
+            logger.warn("save dfs skipped: database rebuilding");
+            return;
+        }
+        int a = dfsMapper.insertDFSResult(dfsResultEntity);
+        if (a < 1) {
+            logger.warn("save dfs error");
+        }
+    }
+
+    public static void saveDFSList(DFSResultListEntity dfsResultListEntity) {
+        if (dfsListMapper == null) {
+            logger.warn("save dfs list skipped: database rebuilding");
+            return;
+        }
+        int a = dfsListMapper.insertDFSResultList(dfsResultListEntity);
+        if (a < 1) {
+            logger.warn("save dfs list error");
+        }
+    }
+
+    public static void saveJar(String jarPath) {
+        JarEntity en = new JarEntity();
+        en.setJarAbsPath(jarPath);
+        if (OSUtil.isWindows()) {
+            String[] temp = jarPath.split("\\\\");
+            en.setJarName(temp[temp.length - 1]);
+        } else {
+            String[] temp = jarPath.split("/");
+            en.setJarName(temp[temp.length - 1]);
+        }
+        List<JarEntity> js = new ArrayList<>();
+        js.add(en);
+        int i = jarMapper.insertJar(js);
+        if (i != 0) {
+            logger.debug("save jar finish");
+        }
+    }
+
+    public static JarEntity getJarId(String jarPath) {
+        List<JarEntity> jarEntities = jarMapper.selectJarByAbsPath(jarPath);
+        if (jarEntities == null || jarEntities.isEmpty()) {
+            return null;
+        }
+        Map<String, JarEntity> distinct = new LinkedHashMap<>();
+        for (JarEntity jarEntity : jarEntities) {
+            distinct.putIfAbsent(jarEntity.getJarName(), jarEntity);
+        }
+        return distinct.values().stream().findFirst().orElse(null);
+    }
+
+    public static void saveClassFiles(Set<ClassFileEntity> classFileList) {
+        logger.info("total class file: {}", classFileList.size());
+        List<ClassFileEntity> list = new ArrayList<>();
+        for (ClassFileEntity classFile : classFileList) {
+            classFile.setPathStr(classFile.getPath().toAbsolutePath().toString());
+            if (classFile.getJarId() == null) {
+                classFile.setJarId(-1);
+            }
+            list.add(classFile);
+        }
+        List<List<ClassFileEntity>> partition = PartitionUtils.partition(list, PART_SIZE);
+        for (List<ClassFileEntity> data : partition) {
+            int a = classFileMapper.insertClassFile(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save class file finish");
+    }
+
+    public static void saveClassInfo(Set<ClassReference> discoveredClasses) {
+        logger.info("total class: {}", discoveredClasses.size());
+        MainForm.getInstance().getTotalClassVal().setText(String.valueOf(discoveredClasses.size()));
+        List<ClassEntity> list = new ArrayList<>();
+        for (ClassReference reference : discoveredClasses) {
+            ClassEntity classEntity = new ClassEntity();
+            classEntity.setJarName(reference.getJarName());
+            classEntity.setJarId(reference.getJarId());
+            classEntity.setVersion(reference.getVersion());
+            classEntity.setAccess(reference.getAccess());
+            classEntity.setClassName(reference.getName());
+            classEntity.setSuperClassName(reference.getSuperClass());
+            classEntity.setInterface(reference.isInterface());
+            list.add(classEntity);
+        }
+        List<List<ClassEntity>> partition = PartitionUtils.partition(list, PART_SIZE);
+        for (List<ClassEntity> data : partition) {
+            int a = classMapper.insertClass(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save class finish");
+
+        List<MemberEntity> mList = new ArrayList<>();
+        List<AnnoEntity> aList = new ArrayList<>();
+        List<InterfaceEntity> iList = new ArrayList<>();
+        for (ClassReference reference : discoveredClasses) {
+            for (ClassReference.Member member : reference.getMembers()) {
+                MemberEntity memberEntity = new MemberEntity();
+                memberEntity.setMemberName(member.getName());
+                memberEntity.setModifiers(member.getModifiers());
+                memberEntity.setValue(member.getValue());
+                memberEntity.setTypeClassName(member.getType().getName());
+                memberEntity.setClassName(reference.getName());
+                memberEntity.setMethodDesc(member.getDesc());
+                memberEntity.setMethodSignature(member.getSignature());
+                memberEntity.setJarId(reference.getJarId());
+                mList.add(memberEntity);
+            }
+            for (AnnoReference anno : reference.getAnnotations()) {
+                AnnoEntity annoEntity = new AnnoEntity();
+                annoEntity.setAnnoName(anno.getAnnoName());
+                annoEntity.setVisible(anno.getVisible() ? 1 : 0);
+                annoEntity.setClassName(reference.getName());
+                annoEntity.setJarId(reference.getJarId());
+                annoEntity.setParameter(anno.getParameter());
+                aList.add(annoEntity);
+            }
+            for (String inter : reference.getInterfaces()) {
+                InterfaceEntity interfaceEntity = new InterfaceEntity();
+                interfaceEntity.setClassName(reference.getName());
+                interfaceEntity.setInterfaceName(inter);
+                interfaceEntity.setJarId(reference.getJarId());
+                iList.add(interfaceEntity);
+            }
+        }
+        List<List<MemberEntity>> mPartition = PartitionUtils.partition(mList, PART_SIZE);
+        for (List<MemberEntity> data : mPartition) {
+            int a = memberMapper.insertMember(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save member success");
+
+        saveAnno(aList);
+        logger.info("save class anno success");
+
+        List<List<InterfaceEntity>> iPartition = PartitionUtils.partition(iList, PART_SIZE);
+        for (List<InterfaceEntity> data : iPartition) {
+            int a = interfaceMapper.insertInterface(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save interface success");
+    }
+
+    private static void saveAnno(List<AnnoEntity> aList) {
+        List<List<AnnoEntity>> aPartition = PartitionUtils.partition(aList, PART_SIZE);
+        for (List<AnnoEntity> data : aPartition) {
+            int a = annoMapper.insertAnno(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+    }
+
+    public static void saveMethods(Set<MethodReference> discoveredMethods) {
+        logger.info("total method: {}", discoveredMethods.size());
+        MainForm.getInstance().getTotalMethodVal().setText(String.valueOf(discoveredMethods.size()));
+        List<MethodEntity> mList = new ArrayList<>();
+        List<AnnoEntity> aList = new ArrayList<>();
+        for (MethodReference reference : discoveredMethods) {
+            MethodEntity methodEntity = new MethodEntity();
+            methodEntity.setMethodName(reference.getName());
+            methodEntity.setMethodDesc(reference.getDesc());
+            methodEntity.setClassName(reference.getClassReference().getName());
+            methodEntity.setStatic(reference.isStatic());
+            methodEntity.setAccess(reference.getAccess());
+            methodEntity.setLineNumber(reference.getLineNumber());
+            methodEntity.setJarId(reference.getJarId());
+            mList.add(methodEntity);
+            for (AnnoReference anno : reference.getAnnotations()) {
+                AnnoEntity annoEntity = new AnnoEntity();
+                annoEntity.setAnnoName(anno.getAnnoName());
+                annoEntity.setMethodName(reference.getName());
+                annoEntity.setClassName(reference.getClassReference().getName());
+                annoEntity.setJarId(reference.getJarId());
+                annoEntity.setVisible(anno.getVisible() ? 1 : 0);
+                annoEntity.setParameter(anno.getParameter());
+                aList.add(annoEntity);
+            }
+        }
+        List<List<MethodEntity>> mPartition = PartitionUtils.partition(mList, PART_SIZE);
+        for (List<MethodEntity> data : mPartition) {
+            int a = methodMapper.insertMethod(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save method success");
+
+        saveAnno(aList);
+        logger.info("save method anno success");
+    }
+
+    public static void saveMethodCalls(HashMap<MethodReference.Handle,
+            HashSet<MethodReference.Handle>> methodCalls) {
+        List<MethodCallEntity> mList = new ArrayList<>();
+        for (Map.Entry<MethodReference.Handle, HashSet<MethodReference.Handle>> call :
+                methodCalls.entrySet()) {
+            MethodReference.Handle caller = call.getKey();
+            HashSet<MethodReference.Handle> callee = call.getValue();
+
+            for (MethodReference.Handle mh : callee) {
+                MethodCallEntity mce = new MethodCallEntity();
+                mce.setCallerClassName(caller.getClassReference().getName());
+                mce.setCallerMethodName(caller.getName());
+                mce.setCallerMethodDesc(caller.getDesc());
+                // 2026/05/10 修复可能的 NPE 问题
+                mce.setCallerJarId(AnalyzeEnv.classMap.getOrDefault(
+                        caller.getClassReference(), notFoundClassReference).getJarId());
+                mce.setCalleeClassName(mh.getClassReference().getName());
+                mce.setCalleeMethodName(mh.getName());
+                mce.setCalleeMethodDesc(mh.getDesc());
+                mce.setCalleeJarId(AnalyzeEnv.classMap.getOrDefault(
+                        mh.getClassReference(), notFoundClassReference).getJarId());
+                mce.setOpCode(mh.getOpcode());
+                mList.add(mce);
+            }
+        }
+
+        List<List<MethodCallEntity>> mPartition = PartitionUtils.partition(mList, PART_SIZE);
+        for (List<MethodCallEntity> data : mPartition) {
+            int a = methodCallMapper.insertMethodCall(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save method call success");
+    }
+
+    public static void saveImpls(Map<MethodReference.Handle, Set<MethodReference.Handle>> implMap) {
+        List<MethodImplEntity> mList = new ArrayList<>();
+        for (Map.Entry<MethodReference.Handle, Set<MethodReference.Handle>> call :
+                implMap.entrySet()) {
+            MethodReference.Handle method = call.getKey();
+            Set<MethodReference.Handle> impls = call.getValue();
+            for (MethodReference.Handle mh : impls) {
+                MethodImplEntity impl = new MethodImplEntity();
+                impl.setImplClassName(mh.getClassReference().getName());
+                impl.setClassName(method.getClassReference().getName());
+                impl.setMethodName(mh.getName());
+                impl.setMethodDesc(mh.getDesc());
+                impl.setClassJarId(AnalyzeEnv.classMap.getOrDefault(
+                        method.getClassReference(), notFoundClassReference).getJarId());
+                impl.setImplClassJarId(AnalyzeEnv.classMap.getOrDefault(
+                        mh.getClassReference(), notFoundClassReference).getJarId());
+                mList.add(impl);
+            }
+        }
+        List<List<MethodImplEntity>> mPartition = PartitionUtils.partition(mList, PART_SIZE);
+        for (List<MethodImplEntity> data : mPartition) {
+            int a = methodImplMapper.insertMethodImpl(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save method impl success");
+    }
+
+    public static void saveStrMap(Map<MethodReference.Handle, List<String>> strMap,
+                                  Map<MethodReference.Handle, List<String>> stringAnnoMap) {
+        List<StringEntity> mList = new ArrayList<>();
+
+        logger.info("save str map length: {}", strMap.size());
+        for (Map.Entry<MethodReference.Handle, List<String>> strEntry : strMap.entrySet()) {
+            MethodReference.Handle method = strEntry.getKey();
+            List<String> strList = strEntry.getValue();
+            for (String s : strList) {
+                MethodReference mr = AnalyzeEnv.methodMap.get(method);
+                if (mr == null) {
+                    continue;
+                }
+                ClassReference cr = AnalyzeEnv.classMap.getOrDefault(
+                        mr.getClassReference(), notFoundClassReference);
+                StringEntity stringEntity = new StringEntity();
+                stringEntity.setValue(s);
+                stringEntity.setAccess(mr.getAccess());
+                stringEntity.setClassName(cr.getName());
+                stringEntity.setJarName(cr.getJarName());
+                stringEntity.setJarId(cr.getJarId());
+                stringEntity.setMethodDesc(mr.getDesc());
+                stringEntity.setMethodName(mr.getName());
+                mList.add(stringEntity);
+            }
+        }
+
+        // 2024/12/05 处理注解部分的字符串搜索
+        logger.info("save string anno map length: {}", stringAnnoMap.size());
+        for (Map.Entry<MethodReference.Handle, List<String>> strEntry : stringAnnoMap.entrySet()) {
+            MethodReference.Handle method = strEntry.getKey();
+            List<String> strList = strEntry.getValue();
+            for (String s : strList) {
+                MethodReference mr = AnalyzeEnv.methodMap.get(method);
+                if (mr == null) {
+                    continue;
+                }
+                ClassReference cr = AnalyzeEnv.classMap.getOrDefault(
+                        mr.getClassReference(), notFoundClassReference);
+                StringEntity stringEntity = new StringEntity();
+                stringEntity.setValue(s);
+                stringEntity.setAccess(mr.getAccess());
+                stringEntity.setClassName(cr.getName());
+                stringEntity.setJarName(cr.getJarName());
+                stringEntity.setJarId(cr.getJarId());
+                stringEntity.setMethodDesc(mr.getDesc());
+                stringEntity.setMethodName(mr.getName());
+                mList.add(stringEntity);
+            }
+        }
+
+        List<List<StringEntity>> mPartition = PartitionUtils.partition(mList, PART_SIZE);
+        for (List<StringEntity> data : mPartition) {
+            int a = stringMapper.insertString(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+        logger.info("save all string success");
+    }
+
+    public static void saveSpringController(ArrayList<SpringController> controllers) {
+        List<SpringControllerEntity> cList = new ArrayList<>();
+        List<SpringMethodEntity> mList = new ArrayList<>();
+        // 2025/06/26 处理 SPRING 分析错误时报错
+        if (controllers == null || controllers.isEmpty()) {
+            // 2025/08/05 SPRING 数据为空时不应该使用 WARN 日志
+            logger.info("SPRING CONTROLLER analysis error: data is empty");
+            return;
+        }
+        try {
+            for (SpringController controller : controllers) {
+                SpringControllerEntity ce = new SpringControllerEntity();
+                ce.setClassName(controller.getClassName().getName());
+                ce.setJarId(controller.getClassReference().getJarId());
+                cList.add(ce);
+                for (SpringMapping mapping : controller.getMappings()) {
+                    SpringMethodEntity me = new SpringMethodEntity();
+                    me.setClassName(controller.getClassName().getName());
+                    me.setJarId(controller.getClassReference().getJarId());
+                    me.setPath(mapping.getPath());
+                    me.setMethodName(mapping.getMethodName().getName());
+                    me.setMethodDesc(mapping.getMethodName().getDesc());
+                    if (mapping.getPathRestful() != null && !mapping.getPathRestful().isEmpty()) {
+                        me.setRestfulType(mapping.getPathRestful());
+                        initPath(mapping, me);
+                    } else {
+                        for (AnnoReference annotation : mapping.getMethodReference().getAnnotations()) {
+                            if (annotation.getAnnoName().startsWith(SpringConstant.ANNO_PREFIX)) {
+                                me.setRestfulType(annotation.getAnnoName()
+                                        .replace(SpringConstant.ANNO_PREFIX, "")
+                                        .replace(SpringConstant.MappingAnno, "")
+                                        .replace(";", " "));
+                                initPath(mapping, me);
+                            }
+                        }
+                    }
+                    mList.add(me);
+                }
+            }
+            List<List<SpringControllerEntity>> cPartition = PartitionUtils.partition(cList, PART_SIZE);
+            for (List<SpringControllerEntity> data : cPartition) {
+                int a = springCMapper.insertControllers(data);
+                if (a == 0) {
+                    logger.warn("save error");
+                }
+            }
+            List<List<SpringMethodEntity>> mPartition = PartitionUtils.partition(mList, PART_SIZE);
+
+            for (List<SpringMethodEntity> data : mPartition) {
+
+                // FIX PATH NOT NULL BUG
+                List<SpringMethodEntity> newList = new ArrayList<>();
+                for (SpringMethodEntity entity : data) {
+                    if (entity.getPath() == null || entity.getPath().isEmpty()) {
+                        entity.setPath("none");
+                    }
+                    newList.add(entity);
+                }
+
+                int a = springMMapper.insertMappings(newList);
+                if (a == 0) {
+                    logger.warn("save error");
+                }
+            }
+        } catch (Throwable t) {
+            logger.warn("SPRING CONTROLLER analysis error, please submit an ISSUE");
+        }
+        logger.info("save all spring data success");
+    }
+
+    private static void initPath(SpringMapping mapping, SpringMethodEntity me) {
+        if (StrUtil.isBlank(mapping.getPath()) &&
+                StrUtil.isNotBlank(mapping.getController().getBasePath())) {
+            me.setPath(mapping.getController().getBasePath());
+        }
+        if (StrUtil.isNotBlank(mapping.getPath()) && mapping.getPath().endsWith("/")) {
+            me.setPath(mapping.getPath().substring(0, mapping.getPath().length() - 1));
+        }
+    }
+
+    public static void saveSpringInterceptor(ArrayList<String> interceptors) {
+        List<SpringInterceptorEntity> list = new ArrayList<>();
+        for (String interceptor : interceptors) {
+            SpringInterceptorEntity ce = new SpringInterceptorEntity();
+            ce.setClassName(interceptor);
+            ce.setJarId(AnalyzeEnv.classMap.getOrDefault(new ClassReference.Handle(interceptor), notFoundClassReference).getJarId());
+            list.add(ce);
+        }
+        List<List<SpringInterceptorEntity>> partition = PartitionUtils.partition(list, PART_SIZE);
+        for (List<SpringInterceptorEntity> data : partition) {
+            int a = springIMapper.insertInterceptors(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+    }
+
+    public static void saveServlets(ArrayList<String> servlets) {
+        List<JavaWebEntity> list = new ArrayList<>();
+        for (String servlet : servlets) {
+            JavaWebEntity ce = new JavaWebEntity();
+            ce.setClassName(servlet);
+            ce.setJarId(AnalyzeEnv.classMap.getOrDefault(new ClassReference.Handle(servlet), notFoundClassReference).getJarId());
+            list.add(ce);
+        }
+        List<List<JavaWebEntity>> partition = PartitionUtils.partition(list, PART_SIZE);
+        for (List<JavaWebEntity> data : partition) {
+            int a = javaWebMapper.insertServlets(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+    }
+
+    public static void saveFilters(ArrayList<String> filters) {
+        List<JavaWebEntity> list = new ArrayList<>();
+        for (String filter : filters) {
+            JavaWebEntity ce = new JavaWebEntity();
+            ce.setClassName(filter);
+            ce.setJarId(AnalyzeEnv.classMap.getOrDefault(new ClassReference.Handle(filter), notFoundClassReference).getJarId());
+            list.add(ce);
+        }
+        List<List<JavaWebEntity>> partition = PartitionUtils.partition(list, PART_SIZE);
+        for (List<JavaWebEntity> data : partition) {
+            int a = javaWebMapper.insertFilters(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+    }
+
+    public static void saveListeners(ArrayList<String> listeners) {
+        List<JavaWebEntity> list = new ArrayList<>();
+        for (String listener : listeners) {
+            JavaWebEntity ce = new JavaWebEntity();
+            ce.setClassName(listener);
+            ce.setJarId(AnalyzeEnv.classMap.getOrDefault(new ClassReference.Handle(listener), notFoundClassReference).getJarId());
+            list.add(ce);
+        }
+        List<List<JavaWebEntity>> partition = PartitionUtils.partition(list, PART_SIZE);
+        for (List<JavaWebEntity> data : partition) {
+            int a = javaWebMapper.insertListeners(data);
+            if (a == 0) {
+                logger.warn("save error");
+            }
+        }
+    }
+
+    public static void cleanFav() {
+        favMapper.cleanFav();
+    }
+
+    public static void cleanFavItem(MethodResult m) {
+        favMapper.cleanFavItem(m);
+    }
+
+    public static void addFav(MethodResult m) {
+        favMapper.addFav(m);
+    }
+
+    public static void insertHistory(MethodResult m) {
+        hisMapper.insertHistory(m);
+    }
+
+    public static void cleanHistory() {
+        hisMapper.cleanHistory();
+    }
+
+    public static ArrayList<MethodResult> getAllFavMethods() {
+        return favMapper.getAllFavMethods();
+    }
+
+    public static ArrayList<MethodResult> getAllHisMethods() {
+        return hisMapper.getAllHisMethods();
+    }
+}
