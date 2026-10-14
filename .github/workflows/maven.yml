@@ -1,0 +1,37 @@
+name: maven check
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  check:
+    name: maven check (jdk ${{ matrix.java-version }}) [${{ matrix.expander_leg 
+      }}]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - java-version: 25
+          os: macos-latest
+          arch: arm64
+          runner: macos-latest
+          expander_leg: macos-latest-25-arm64
+    steps:
+    - uses: actions/checkout@v6
+    - name: set up java ${{ matrix.java-version }}
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
+        # No JDK 8 build exists for Windows on arm64. Install the x64 JDK 8
+        # instead; Windows 11 on arm64 runs it under x64 emulation.
+        architecture: ${{ (matrix.java-version == 8 && matrix.arch == 'arm64' &&
+          matrix.os == 'windows-latest') && 'x64' || '' }}
+        cache: maven
+    - name: check core maven
+      run: mvn -B clean package -DskipTests --file pom.xml
+    - name: check agent maven
+      run: cd agent && mvn -B clean package -DskipTests --file pom.xml
+    timeout-minutes: 150
